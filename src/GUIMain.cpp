@@ -29,6 +29,11 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 // ----------------------------
 // Screenshot: Save framebuffer to BMP
@@ -192,7 +197,35 @@ static void DrawStatusBadge(bool ok, const char* ok_text, const char* bad_text) 
     ImVec4 col = ok ? ImVec4(0.20f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.25f, 0.25f, 1.0f);
     ImGui::TextColored(col, "%s", ok ? ok_text : bad_text);
 }
+struct PacketQueue {
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<CNTDigitizer::Packet> q;
+    size_t max_packets = 5000; // prevents ram from catching on fire
 
+    void push(const CNTDigitizer::Packet& p) {
+        std::lock_guard<std::mutex> lock(m);
+        if (q.size() >= max_packets) {
+            q.pop_front(); // drop oldest if backlog grows too much
+        }
+        q.push_back(p);
+        cv.notify_one();
+    }
+
+    // non-blocking pop
+    bool try_pop(CNTDigitizer::Packet& out) {
+        std::lock_guard<std::mutex> lock(m);
+        if (q.empty()) return false;
+        out = q.front();
+        q.pop_front();
+        return true;
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(m);
+        q.clear();
+    }
+};
 // ----------------------------
 // Fullscreen toggle support
 // ----------------------------
@@ -269,6 +302,11 @@ ImGui_ImplOpenGL3_Init(glsl_version);
     bool measuring = false;
     bool save_all_channels = true;
     bool auto_clear_on_start = false;
+    PacketQueue pkt_queue;
+
+    std::thread reader_thread;
+    std::atomic<bool> reader_running{false};  // thread loop runs while true
+    std::atomic<bool> reader_should_stop{false};
 
     bool request_screenshot = false;
     std::string screenshot_name;
@@ -302,6 +340,40 @@ ImGui_ImplOpenGL3_Init(glsl_version);
 
     bool f11_was_down = false;
 
+    auto start_reader = [&](CNTDigitizer* dev) {
+        if (!dev) return;
+        if (reader_running.load()) return;
+
+        pkt_queue.clear();
+        reader_should_stop.store(false);
+        reader_running.store(true);
+
+        reader_thread = std::thread([&]() {
+            // Optional: give the serial a moment after entering measurement mode
+            // std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+            while (!reader_should_stop.load()) {
+                CNTDigitizer::Packet p{};
+                if (dev->getPacket(p)) {
+                    pkt_queue.push(p);
+                } else {
+                    // getPacket() can fail when no bytes available or on timeout.
+                    // Sleep a tiny bit to avoid pegging CPU at 100%.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }
+
+            reader_running.store(false);
+        });
+    };
+
+    auto stop_reader = [&]() {
+        if (!reader_running.load()) return;
+
+        reader_should_stop.store(true);
+        if (reader_thread.joinable()) reader_thread.join();
+        reader_running.store(false);
+    };
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -334,18 +406,14 @@ ImGui_ImplOpenGL3_Init(glsl_version);
                 last_sim_time += sim_interval;
             }
         } else if (state.connected && measuring && device) {
-            if (now - last_poll_time >= poll_interval) {
-                last_poll_time = now;
+            // Drain whatever packets the reader thread has accumulated this frame.
+            for (int i = 0; i < 256; ++i) { // cap per-frame work so UI stays smooth
+                CNTDigitizer::Packet packet{};
+                if (!pkt_queue.try_pop(packet)) break;
 
-                for (int i = 0; i < 8; ++i) {
-                    CNTDigitizer::Packet packet{};
-                    if (!device->getPacket(packet)) break;
-
-                    const float t_sec = static_cast<float>((now - t0));
-                    //const float t_sec = static_cast<float>(packet.timestamp) / 1000.0f;
-                    AppendPacket(state, packet, t_sec);
-                    now = glfwGetTime();
-                }
+                const float t_sec = static_cast<float>((now - t0));
+                //const float t_sec = static_cast<float>(packet.timestamp) / 1000.0f;
+                AppendPacket(state, packet, t_sec);
             }
         }
 
@@ -426,6 +494,7 @@ ImGui_ImplOpenGL3_Init(glsl_version);
             }
         } else {
             if (ImGui::Button("Disconnect")) {
+                stop_reader();
                 if (measuring && device) {
                     device->enterIdleMode();
                 }
@@ -472,6 +541,9 @@ ImGui_ImplOpenGL3_Init(glsl_version);
 
                 if (ok) {
                     measuring = true;
+                    if (!state.simulate && device) {
+                        start_reader(device.get());
+                    }
                     status_line = "Measurement started.";
                     logMessage(status_line);
                 } else {
@@ -483,6 +555,7 @@ ImGui_ImplOpenGL3_Init(glsl_version);
         } else {
             if (ImGui::Button("Stop Measurement")) {
                 last_error.clear();
+                stop_reader();
                 if (!state.simulate && device) {
                     device->enterIdleMode();
                 }
@@ -602,6 +675,7 @@ ImGui_ImplOpenGL3_Init(glsl_version);
 
     // Cleanup
     if (device) {
+        stop_reader();
         if (measuring) {
             device->enterIdleMode();
         }
