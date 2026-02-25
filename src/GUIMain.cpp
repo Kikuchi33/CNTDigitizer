@@ -1,4 +1,4 @@
-// GUIMain.cpp 1.0 Release
+// GUIMain.cpp 1.1 Release
 // - ImGui + ImPlot + GLFW + OpenGL3 backend
 // - Adds: real device connect/disconnect, start/stop measurement, status panel,
 //         CSV save for plotted dataset, basic error handling, simulation mode,
@@ -578,7 +578,12 @@ ImGui_ImplOpenGL3_Init(glsl_version);
         ImGui::Separator();
 
         ImGui::Checkbox("Auto-scroll (last 10s)", &state.auto_scroll);
-        ImGui::SliderInt("Max Points", &state.max_points, 200, 200000);
+        ImGui::InputInt("Max Points", &state.max_points);
+
+        if (state.max_points < 200) state.max_points = 200;
+        if (state.max_points > 200000) state.max_points = 200000;
+
+        ImGui::TextDisabled("Range: 200 – 200000");
         ImGui::SliderInt("Channel", &state.selected_channel, 0, 15);
 
         if (ImGui::Button("Clear Data")) {
