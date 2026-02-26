@@ -84,7 +84,7 @@ CNTDigitizer::~CNTDigitizer() {
 
 bool CNTDigitizer::connect() {
     logMessage("Note: ACK for parameter commands may be missing (known issue). Treating as non-fatal.");
-    const int ok = serial.openDevice(port_name.c_str(), 115200);
+    const int ok = serial.openDevice(port_name.c_str(), 921600);
     if (ok != 1) {
         logMessage("Error: Failed to open serial device on port: " + port_name);
         return false;
