@@ -7,10 +7,11 @@ The CNT Digitizer is a real-time data acquisition and visualization tool for the
 ## Quick Start (USB Serial)
 
 1. Plug the CNT Digitizer into your computer via USB.
-2. Double-click `gui.exe`.
-3. Enter the correct COM port in the **Port** field.
-4. Click **Connect**.
-5. Click **Start**.
+2. Download the 4  `.dll` files in the `dist` folder, as well as `CNT_Digitizer.exe` and place them in a folder together.
+3. Double-click `CNT_Digitizer.exe`.
+4. Enter the correct COM port in the **Port** field.
+5. Click **Connect**.
+6. Click **Start**.
 
 Live data should now appear in the plot window.
 
@@ -19,12 +20,13 @@ Live data should now appear in the plot window.
 ## Quick Start (WiFi)
 
 1. Power the CNT Digitizer from a USB wall adapter or USB power bank.
-2. On your PC, connect to the WiFi network **CNT_Digitizer** (password: `cnt12345`).
-3. Double-click `gui.exe`.
-4. Check **Use WiFi (AirLift UDP)**.
-5. Set **Teensy IP** to `192.168.4.1` (this is fixed — the board must uses this address).
-6. Leave ports at their defaults (Listen: 5005, Teensy: 5006).
-7. Click **Connect**, then **Start**.
+2. Download the 4  `.dll` files in the `dist` folder, as well as `CNT_Digitizer.exe` and place them in a folder together.
+3. On your PC, connect to the WiFi network **CNT_Digitizer** (password: `cnt12345`).
+4. Double-click `CNT_Digitizer.exe`.
+5. Check **Use WiFi (AirLift UDP)**.
+6. Set **Teensy IP** to `192.168.4.1` (this is fixed — the board must uses this address).
+7. Leave ports at their defaults (Listen: 5005, Teensy: 5006).
+8. Click **Connect**, then **Start**.
 
 > The board creates its own WiFi access point — you do not need a router. Any USB 5V power source (wall adapter, power bank) works. The board does not require a PC connection to power on.
 
@@ -176,7 +178,7 @@ If using a power bank, confirm it does not auto-shutoff under low current load.
 
 ### Application Will Not Start
 
-Ensure the following files are present in the same folder as `gui.exe`:
+Ensure the following files are present in the same folder as `CNT_Digitizer.exe`:
 
     libgcc_s_seh-1.dll
     libstdc++-6.dll
