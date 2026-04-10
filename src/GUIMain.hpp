@@ -1,5 +1,5 @@
 #pragma once
-// GUIMain.hpp
+// GUIMain.hpp  v2.1
 
 #include "CNTDigitizer.hpp"
 #include <array>
@@ -9,7 +9,6 @@
 
 // ---------------------------------------------------------------------------
 // Ring buffer – O(1) push_back / pop_front; no heap reallocation on overflow.
-// Used for plot data so we never do a front-erase on a vector.
 // ---------------------------------------------------------------------------
 template<typename T>
 struct RingBuffer {
@@ -24,7 +23,7 @@ struct RingBuffer {
     void push(T v) {
         buf_[tail_] = v;
         tail_ = next(tail_);
-        if (tail_ == head_) head_ = next(head_); // drop oldest on overflow
+        if (tail_ == head_) head_ = next(head_);
     }
 
     void clear() { head_ = tail_ = 0; }
@@ -35,8 +34,6 @@ struct RingBuffer {
 
     bool empty() const { return head_ == tail_; }
 
-    // Linear copy into a plain vector for ImPlot (zero-copy path available if needed).
-    // Returns number of elements copied.
     size_t linearize(std::vector<T>& out) const {
         size_t n = size();
         out.resize(n);
@@ -52,15 +49,29 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// CsvOverlay – a loaded CSV file rendered as a ghost trace on the live plot
+// ---------------------------------------------------------------------------
+struct CsvOverlay {
+    std::string              filename;   // display name (basename only)
+    std::vector<float>       times;
+    // One vector per channel; may be empty if that channel wasn't in the file
+    std::array<std::vector<float>, CNTDigitizer::kNumChannels> channels;
+    bool                     visible = true;
+    // Metadata parsed from CSV header comments
+    std::string              meta;       // raw "#" header lines joined
+};
+
+// ---------------------------------------------------------------------------
 // Session – one measurement run with metadata
 // ---------------------------------------------------------------------------
 struct Session {
-    std::string name;          // auto-generated from timestamp
-    double      start_wall;    // glfwGetTime() at Start
-    int32_t     bias_mv  = 1000;
-    int32_t     gate_mv  = -1000;
+    std::string name;
+    double      start_wall   = 0.0;
+    int32_t     bias_mv      = 1000;
+    int32_t     gate_mv      = -1000;
     uint32_t    bias_sample_delay_ms  = 1000;
     uint32_t    measurement_delay_ms  = 100;
+    std::string notes;       // free-text saved into CSV header
 };
 
 // ---------------------------------------------------------------------------
@@ -72,31 +83,34 @@ struct AppState {
     std::array<char, 128> port_buffer{};
     bool connected  = false;
     bool simulate   = false;
-    bool use_wifi   = false;   // if true, use UDPTransport instead of serial
+    bool use_wifi   = false;
 
-    // WiFi settings (editable in UI)
-    std::array<char, 64>  wifi_teensy_ip{};   // e.g. "192.168.4.1"
+    // WiFi settings
+    std::array<char, 64>  wifi_teensy_ip{};
     uint16_t wifi_listen_port  = 5005;
     uint16_t wifi_teensy_port  = 5006;
 
     // Plot control
-    bool auto_scroll     = true;
-    bool show_all_ch     = false;  // overlay all 16 channels
-    bool ema_enabled     = false;  // exponential moving average smoothing
-    float ema_alpha      = 0.2f;   // EMA weight [0.01 .. 0.99]
-    int   selected_channel = 0;
-    int   max_points     = 2000;
+    bool  auto_scroll       = true;
+    float scroll_window_sec = 10.f;   // user-adjustable auto-scroll window
+    bool  show_all_ch       = false;
+    bool  ema_enabled       = false;
+    float ema_alpha         = 0.2f;
+    int   selected_channel  = 0;
+    int   max_points        = 2000;
 
-    // Plot data (ring buffers – no O(n) erase ever)
+    // Live plot data (ring buffers)
     RingBuffer<float> times;
     std::array<RingBuffer<float>, CNTDigitizer::kNumChannels> channels;
-    // EMA shadow buffers (linearized at render time)
     std::array<float, CNTDigitizer::kNumChannels> ema_state{};
 
     // Current session metadata
     Session session;
 
-    // Flatten ring buffers to vectors for ImPlot (called once per frame)
+    // Loaded CSV overlays
+    std::vector<CsvOverlay> overlays;
+
+    // Flattened vectors for ImPlot (refreshed once per frame)
     mutable std::vector<float> times_plot;
     mutable std::array<std::vector<float>, CNTDigitizer::kNumChannels> ch_plot;
 
