@@ -1,4 +1,4 @@
-// GUIMain.cpp  v2.1
+// GUIMain.cpp  v2.2
 // ImGui + ImPlot + GLFW + OpenGL3
 // Changes from v2.0:
 //   - PNG export of plot region only (stb_image_write, no external dep)
@@ -7,6 +7,7 @@
 //   - Crosshair cursor with timestamp + current readout tooltip
 //   - Device parameter inputs changed from sliders to InputInt + Send button
 //   - Session notes field saved into CSV header
+//   - config.ini: persistent preferences (port, params, window state, plot options)
 
 #include "GUIMain.hpp"
 
@@ -156,20 +157,123 @@ static void copyPortToBuffer(AppState& st) {
     std::copy_n(st.port.begin(), n, st.port_buffer.begin());
 }
 
-static bool LoadPortFile(const std::string& path, std::string& out) {
-    std::ifstream f(path);
-    if (!f) return false;
-    std::getline(f, out);
-    trimRight(out);
-    return !out.empty();
+// ---------------------------------------------------------------------------
+// Config – persistent preferences saved to config.ini
+// Format: simple key=value, one per line. Lines starting with # are comments.
+// Saved on exit and whenever connection/parameter settings change.
+// ---------------------------------------------------------------------------
+struct AppConfig {
+    // Connection
+    std::string port          = "COM4";
+    bool        use_wifi      = false;
+    std::string wifi_ip       = "192.168.4.1";
+    int         wifi_listen   = 5005;
+    int         wifi_teensy   = 5006;
+
+    // Device parameters
+    int      bias_mv     = 1000;
+    int      gate_mv     = -1000;
+    int      bsd_ms      = 1000;
+    int      md_ms       = 100;
+
+    // Plot
+    bool     auto_scroll      = true;
+    float    scroll_window    = 10.f;
+    bool     show_all_ch      = false;
+    bool     ema_enabled      = false;
+    float    ema_alpha        = 0.2f;
+    int      max_points       = 2000;
+    int      selected_channel = 0;
+
+    // Window
+    bool     fullscreen       = true;
+    int      win_x = 100, win_y = 100;
+    int      win_w = 1360, win_h = 780;
+
+    // UI
+    bool     save_all_channels   = true;
+    bool     auto_clear_on_start = false;
+};
+
+static void SaveConfig(const std::string& path, const AppConfig& cfg) {
+    std::ofstream f(path, std::ios::trunc);
+    if (!f) return;
+    f << "# CNT Digitizer config — edited automatically on exit\n";
+    f << "# Connection\n";
+    f << "port="         << cfg.port        << "\n";
+    f << "use_wifi="     << cfg.use_wifi     << "\n";
+    f << "wifi_ip="      << cfg.wifi_ip      << "\n";
+    f << "wifi_listen="  << cfg.wifi_listen  << "\n";
+    f << "wifi_teensy="  << cfg.wifi_teensy  << "\n";
+    f << "# Device parameters\n";
+    f << "bias_mv="      << cfg.bias_mv      << "\n";
+    f << "gate_mv="      << cfg.gate_mv      << "\n";
+    f << "bsd_ms="       << cfg.bsd_ms       << "\n";
+    f << "md_ms="        << cfg.md_ms        << "\n";
+    f << "# Plot\n";
+    f << "auto_scroll="      << cfg.auto_scroll      << "\n";
+    f << "scroll_window="    << cfg.scroll_window    << "\n";
+    f << "show_all_ch="      << cfg.show_all_ch      << "\n";
+    f << "ema_enabled="      << cfg.ema_enabled       << "\n";
+    f << "ema_alpha="        << cfg.ema_alpha         << "\n";
+    f << "max_points="       << cfg.max_points        << "\n";
+    f << "selected_channel=" << cfg.selected_channel  << "\n";
+    f << "# Window\n";
+    f << "fullscreen="  << cfg.fullscreen  << "\n";
+    f << "win_x="       << cfg.win_x       << "\n";
+    f << "win_y="       << cfg.win_y       << "\n";
+    f << "win_w="       << cfg.win_w       << "\n";
+    f << "win_h="       << cfg.win_h       << "\n";
+    f << "# UI\n";
+    f << "save_all_channels="   << cfg.save_all_channels   << "\n";
+    f << "auto_clear_on_start=" << cfg.auto_clear_on_start << "\n";
 }
 
-static bool SavePortFile(const std::string& path, const std::string& port) {
-    std::ofstream f(path, std::ios::trunc);
-    if (!f) return false;
-    f << port << '\n';
-    return true;
+static AppConfig LoadConfig(const std::string& path) {
+    AppConfig cfg;
+    std::ifstream f(path);
+    if (!f) return cfg;  // return defaults if file missing
+
+    std::string line;
+    while (std::getline(f, line)) {
+        trimRight(line);
+        if (line.empty() || line[0] == '#') continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+        trimRight(key); trimRight(val);
+
+        try {
+            if      (key == "port")               cfg.port             = val;
+            else if (key == "use_wifi")            cfg.use_wifi         = (val == "1");
+            else if (key == "wifi_ip")             cfg.wifi_ip          = val;
+            else if (key == "wifi_listen")         cfg.wifi_listen      = std::stoi(val);
+            else if (key == "wifi_teensy")         cfg.wifi_teensy      = std::stoi(val);
+            else if (key == "bias_mv")             cfg.bias_mv          = std::stoi(val);
+            else if (key == "gate_mv")             cfg.gate_mv          = std::stoi(val);
+            else if (key == "bsd_ms")              cfg.bsd_ms           = std::stoi(val);
+            else if (key == "md_ms")               cfg.md_ms            = std::stoi(val);
+            else if (key == "auto_scroll")         cfg.auto_scroll      = (val == "1");
+            else if (key == "scroll_window")       cfg.scroll_window    = std::stof(val);
+            else if (key == "show_all_ch")         cfg.show_all_ch      = (val == "1");
+            else if (key == "ema_enabled")         cfg.ema_enabled      = (val == "1");
+            else if (key == "ema_alpha")           cfg.ema_alpha        = std::stof(val);
+            else if (key == "max_points")          cfg.max_points       = std::stoi(val);
+            else if (key == "selected_channel")    cfg.selected_channel = std::stoi(val);
+            else if (key == "fullscreen")          cfg.fullscreen       = (val == "1");
+            else if (key == "win_x")               cfg.win_x            = std::stoi(val);
+            else if (key == "win_y")               cfg.win_y            = std::stoi(val);
+            else if (key == "win_w")               cfg.win_w            = std::stoi(val);
+            else if (key == "win_h")               cfg.win_h            = std::stoi(val);
+            else if (key == "save_all_channels")   cfg.save_all_channels   = (val == "1");
+            else if (key == "auto_clear_on_start") cfg.auto_clear_on_start = (val == "1");
+        } catch (...) {}  // ignore malformed values, keep defaults
+    }
+    return cfg;
 }
+
+
 
 static std::string nowTimestampString() {
     using namespace std::chrono;
@@ -415,8 +519,14 @@ int main() {
 
     GLFWmonitor* mon  = glfwGetPrimaryMonitor();
     const GLFWvidmode* vm = glfwGetVideoMode(mon);
-    GLFWwindow* window = glfwCreateWindow(vm->width, vm->height, "CNT Digitizer", mon, nullptr);
+    // Read config early to determine initial window mode
+    AppConfig _pre_cfg = LoadConfig("config.ini");
+    GLFWwindow* window = _pre_cfg.fullscreen
+        ? glfwCreateWindow(vm->width, vm->height, "CNT Digitizer", mon, nullptr)
+        : glfwCreateWindow(_pre_cfg.win_w, _pre_cfg.win_h, "CNT Digitizer", nullptr, nullptr);
     if (!window) { glfwTerminate(); return 1; }
+    if (!_pre_cfg.fullscreen)
+        glfwSetWindowPos(window, _pre_cfg.win_x, _pre_cfg.win_y);
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -435,23 +545,40 @@ int main() {
     // -----------------------------------------------------------------------
     // App state
     // -----------------------------------------------------------------------
-    AppState state;
-    state.resize(state.max_points);
+    // Load config before building AppState so all fields are pre-populated
+    AppConfig cfg = LoadConfig("config.ini");
+    logMessage(cfg.port != "COM4" || true ? "Loaded config.ini" : "config.ini not found, using defaults");
 
-    if (LoadPortFile("port.txt", state.port)) {
-        copyPortToBuffer(state);
-        logMessage("Loaded port.txt: " + state.port);
-    } else {
-        state.port = "COM4";
-        copyPortToBuffer(state);
-        logMessage("port.txt not found. Defaulting to COM4.");
-    }
-    const char* default_ip = "192.168.4.1";
-    std::copy_n(default_ip, strlen(default_ip) + 1, state.wifi_teensy_ip.begin());
+    AppState state;
+
+    // Apply config to state
+    state.port             = cfg.port;
+    state.use_wifi         = cfg.use_wifi;
+    state.wifi_listen_port = (uint16_t)cfg.wifi_listen;
+    state.wifi_teensy_port = (uint16_t)cfg.wifi_teensy;
+    state.auto_scroll      = cfg.auto_scroll;
+    state.scroll_window_sec = cfg.scroll_window;
+    state.show_all_ch      = cfg.show_all_ch;
+    state.ema_enabled      = cfg.ema_enabled;
+    state.ema_alpha        = cfg.ema_alpha;
+    state.selected_channel = cfg.selected_channel;
+    state.session.bias_mv               = cfg.bias_mv;
+    state.session.gate_mv               = cfg.gate_mv;
+    state.session.bias_sample_delay_ms  = (uint32_t)cfg.bsd_ms;
+    state.session.measurement_delay_ms  = (uint32_t)cfg.md_ms;
+
+    state.resize(cfg.max_points);
+    copyPortToBuffer(state);
+
+    // Apply WiFi IP
+    std::copy_n(cfg.wifi_ip.begin(),
+                std::min(cfg.wifi_ip.size(), state.wifi_teensy_ip.size() - 1),
+                state.wifi_teensy_ip.begin());
+    state.wifi_teensy_ip[cfg.wifi_ip.size()] = '\0';
 
     bool measuring           = false;
-    bool save_all_channels   = true;
-    bool auto_clear_on_start = false;
+    bool save_all_channels   = cfg.save_all_channels;
+    bool auto_clear_on_start = cfg.auto_clear_on_start;
     std::string status_line  = "Idle.";
     std::string last_error;
 
@@ -490,9 +617,9 @@ int main() {
     double last_sim_time = t0;
     uint32_t device_timestamp_origin = 0;
 
-    bool is_fullscreen = true;
+    bool is_fullscreen = cfg.fullscreen;
     bool f11_was_down  = false;
-    WindowRestoreInfo restore{100,100,1360,780,true};
+    WindowRestoreInfo restore{cfg.win_x, cfg.win_y, cfg.win_w, cfg.win_h, true};
 
     // -----------------------------------------------------------------------
     // Reader thread helpers
@@ -609,7 +736,9 @@ int main() {
             ImGui::InputText("Serial Port", state.port_buffer.data(), state.port_buffer.size());
             if (ImGui::Button("Save Port")) {
                 state.port = state.port_buffer.data();
-                SavePortFile("port.txt", state.port);
+                AppConfig save_cfg = cfg;
+                save_cfg.port = state.port;
+                SaveConfig("config.ini", save_cfg);
                 status_line = "Saved port: " + state.port;
             }
         } else {
@@ -689,7 +818,7 @@ int main() {
         // Clamp to safe ranges
         param_bias_mv  = std::clamp(param_bias_mv,  -5000, 5000);
         param_gate_mv  = std::clamp(param_gate_mv,  -5000, 5000);
-        param_bsd_ms   = std::clamp(param_bsd_ms,   10,    5000);
+        param_bsd_ms   = std::clamp(param_bsd_ms,   10,    60000);
         param_md_ms    = std::clamp(param_md_ms,    10,    2000);
 
         if (ImGui::Button("Send Parameters")) {
@@ -1112,6 +1241,42 @@ int main() {
             else
                 last_error = "Plot PNG save failed.";
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Save config on exit so all current settings persist next launch
+    // ------------------------------------------------------------------
+    {
+        AppConfig exit_cfg;
+        exit_cfg.port             = state.port;
+        exit_cfg.use_wifi         = state.use_wifi;
+        exit_cfg.wifi_ip          = std::string(state.wifi_teensy_ip.data());
+        exit_cfg.wifi_listen      = (int)state.wifi_listen_port;
+        exit_cfg.wifi_teensy      = (int)state.wifi_teensy_port;
+        exit_cfg.bias_mv          = param_bias_mv;
+        exit_cfg.gate_mv          = param_gate_mv;
+        exit_cfg.bsd_ms           = param_bsd_ms;
+        exit_cfg.md_ms            = param_md_ms;
+        exit_cfg.auto_scroll      = state.auto_scroll;
+        exit_cfg.scroll_window    = state.scroll_window_sec;
+        exit_cfg.show_all_ch      = state.show_all_ch;
+        exit_cfg.ema_enabled      = state.ema_enabled;
+        exit_cfg.ema_alpha        = state.ema_alpha;
+        exit_cfg.max_points       = state.max_points;
+        exit_cfg.selected_channel = state.selected_channel;
+        exit_cfg.fullscreen       = is_fullscreen;
+        exit_cfg.save_all_channels   = save_all_channels;
+        exit_cfg.auto_clear_on_start = auto_clear_on_start;
+        // Save windowed size/pos for next windowed launch
+        if (!is_fullscreen) {
+            glfwGetWindowPos(window, &exit_cfg.win_x, &exit_cfg.win_y);
+            glfwGetWindowSize(window, &exit_cfg.win_w, &exit_cfg.win_h);
+        } else {
+            exit_cfg.win_x = restore.x; exit_cfg.win_y = restore.y;
+            exit_cfg.win_w = restore.w; exit_cfg.win_h = restore.h;
+        }
+        SaveConfig("config.ini", exit_cfg);
+        logMessage("Config saved to config.ini");
     }
 
     // ------------------------------------------------------------------
